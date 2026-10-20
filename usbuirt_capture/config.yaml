@@ -1,0 +1,25 @@
+name: USB-UIRT Raw Capture
+version: "0.1.0"
+slug: usbuirt_capture
+description: Raw USB-UIRT capture for the native Home Assistant receiver integration
+url: https://github.com/kjstevo/ha-usbuirt
+arch:
+  - amd64
+  - aarch64
+startup: application
+boot: auto
+init: false
+host_network: true
+uart: true
+options:
+  device: /dev/serial/by-id/usb-FTDI_USB-UIRT-if00-port0
+  driver: usb_uirt_raw
+  port: 8766
+  token: CHANGE_ME_TO_A_LONG_RANDOM_SECRET
+  gap_us: 20000
+schema:
+  device: str
+  driver: str
+  port: port
+  token: password
+  gap_us: int(5000,100000)

@@ -1,0 +1,12 @@
+{
+  "domain": "usbuirt_receiver",
+  "name": "USB-UIRT Receiver",
+  "version": "0.1.0",
+  "config_flow": true,
+  "dependencies": ["infrared"],
+  "requirements": [],
+  "iot_class": "local_polling",
+  "documentation": "https://github.com/kjstevo/ha-usbuirt",
+  "issue_tracker": "https://github.com/kjstevo/ha-usbuirt/issues",
+  "codeowners": ["@kjstevo"]
+}
