@@ -18,21 +18,30 @@ if len(token) < 24 or token.startswith("CHANGE_ME"):
 queue = collections.deque(maxlen=256)
 lock = threading.Lock()
 process = None
+# True while mode2 is being restarted right after a normal exit, so /signals
+# keeps reporting "running" and the receiver doesn't flip to unavailable.
+restarting = False
 
 def capture():
-    global process
+    global process, restarting
+    quick_failures = 0
     while True:
         frame = []
         last = time.monotonic()
+        got_data = False
         def flush():
+            nonlocal got_data
             if len(frame) >= 4:
                 with lock:
                     queue.append(list(frame))
+                got_data = True
             frame.clear()
         try:
             cmd = ["mode2", "--driver=" + cfg["driver"], "--device=" + cfg["device"]]
-            logging.info("Starting raw capture: %s", cmd)
+            if not restarting:
+                logging.info("Starting raw capture: %s", cmd)
             process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=None, bufsize=0)
+            restarting = False
             buffer = b""
             while process.poll() is None:
                 ready, _, _ = select.select([process.stdout], [], [], 0.05)
@@ -68,12 +77,24 @@ def capture():
             if process.poll() is None:
                 process.terminate()
             process.wait(timeout=5)
-            logging.warning("mode2 exited: %s; retrying in 5 seconds", process.returncode)
         except Exception:
             logging.exception("Capture failed")
             if process is not None and process.poll() is None:
                 process.kill()
-        time.sleep(5)
+            got_data = False
+        # mode2 with the usb_uirt_raw driver exits ("readdata() failed") after
+        # every received signal. Restart it at once so the next press isn't
+        # lost; only back off if it keeps exiting without receiving anything.
+        quick_failures = 0 if got_data else quick_failures + 1
+        if quick_failures <= 3:
+            restarting = True
+            if not got_data:
+                logging.warning("mode2 exited: %s; restarting", process and process.returncode)
+            time.sleep(0.05)
+        else:
+            restarting = False
+            logging.warning("mode2 exited: %s; retrying in 5 seconds", process and process.returncode)
+            time.sleep(5)
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -86,7 +107,7 @@ class Handler(BaseHTTPRequestHandler):
         with lock:
             signals = list(queue)
             queue.clear()
-        body = json.dumps({"running": process is not None and process.poll() is None, "signals": signals}).encode()
+        body = json.dumps({"running": restarting or (process is not None and process.poll() is None), "signals": signals}).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))

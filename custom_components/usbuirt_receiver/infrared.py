@@ -63,4 +63,4 @@ class USBUIRTReceiver(InfraredReceiverEntity):
                 if message != self._last_error:
                     _LOGGER.warning("USB-UIRT capture unavailable: %s", message)
                     self._last_error = message
-            await asyncio.sleep(0.25 if self._attr_available else 5)
+            await asyncio.sleep(0.25 if self._attr_available else 1)
