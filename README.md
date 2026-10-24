@@ -28,6 +28,12 @@ USB-UIRT -> mode2 in capture app -> token-authenticated local HTTP -> native Inf
 
 Both pieces run on your existing Home Assistant machine; no external computer or MQTT required. The capture app provides mode2 without modifying the Core container. Hardware visibility alone does not establish serial access inside every container.
 
+## Held buttons
+
+While a button is held, NEC remotes send short repeat frames (about every 110 ms) instead of the full code. The capture app passes them through, and the integration fires a `usbuirt_receiver_repeat` event for each one with `entity_id` (the receiver), `count` (repeats so far) and `held` (seconds since the full code). HAIR still receives only full frames, so a hold is one HAIR trigger; use the event to auto-repeat while held. Full frames still go to HAIR exactly as before.
+
+The integration long-polls the capture app (`/signals?wait=5`), so signals are delivered as soon as they arrive instead of every 0.25 s. It falls back to 0.25 s polling with older capture app versions.
+
 ## Security
 
 The app uses host networking and listens on all interfaces on TCP 8766. HTTP is unencrypted and uses a bearer token. Keep it on a trusted LAN, firewall access to Home Assistant, and never forward this port to the internet. One polling integration per endpoint: reads drain the queue. Queue is limited to 256 captures; events can be lost during outages.

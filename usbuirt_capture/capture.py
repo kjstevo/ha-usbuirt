@@ -22,6 +22,8 @@ if len(token) < 24 or token.startswith("CHANGE_ME"):
 GAP_US = cfg["gap_us"]
 queue = collections.deque(maxlen=256)
 lock = threading.Lock()
+# Notified whenever a signal is queued, so /signals?wait=N can return at once
+signal_ready = threading.Condition(lock)
 # True while a capture backend is reading the receiver (reported as "running").
 capturing = False
 # True once direct capture has initialised the USB-UIRT at least once.
@@ -57,9 +59,12 @@ class FrameBuilder:
             self.frame.clear()
 
     def flush(self):
-        if len(self.frame) >= 4:
+        # 3 is the shortest useful frame: an NEC repeat ("ditto") while a
+        # button is held is pulse 9000, space 2250, pulse 560.
+        if len(self.frame) >= 3:
             with lock:
                 queue.append(list(self.frame))
+                signal_ready.notify_all()
             self.got_data = True
         self.frame.clear()
 
@@ -285,10 +290,23 @@ class Handler(BaseHTTPRequestHandler):
         if not hmac.compare_digest(self.headers.get("Authorization", ""), "Bearer " + token):
             self.send_error(401)
             return
-        if self.path != "/signals":
+        path, _, query = self.path.partition("?")
+        if path != "/signals":
             self.send_error(404)
             return
+        # Optional long poll: ?wait=N holds the request up to N seconds (max
+        # 10) until a signal arrives, so signals are delivered immediately.
+        wait = 0.0
+        for part in query.split("&"):
+            key, _, value = part.partition("=")
+            if key == "wait":
+                try:
+                    wait = min(max(float(value), 0.0), 10.0)
+                except ValueError:
+                    pass
         with lock:
+            if wait and not queue:
+                signal_ready.wait_for(lambda: queue, timeout=wait)
             signals = list(queue)
             queue.clear()
         body = json.dumps({"running": capturing, "signals": signals}).encode()
