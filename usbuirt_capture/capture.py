@@ -22,6 +22,8 @@ if len(token) < 24 or token.startswith("CHANGE_ME"):
 GAP_US = cfg["gap_us"]
 CLEAN_SIGNALS = cfg.get("clean_signals", True)
 queue = collections.deque(maxlen=256)
+# Last frames as captured and after cleanup, for /recent (read-only debugging)
+recent = collections.deque(maxlen=100)
 lock = threading.Lock()
 # Notified whenever a signal is queued, so /signals?wait=N can return at once
 signal_ready = threading.Condition(lock)
@@ -41,6 +43,9 @@ SPACE_GLITCH_US = 350    # no common IR protocol has spaces this short (NEC 560,
 PULSE_GLITCH_US = 200    # ...or pulses this short (Sharp 320, NEC 560)
 LEADER_PULSE_US = 2000   # a pulse at least this long...
 LEADER_SPACE_US = 1500   # ...followed by a space at least this long starts a code
+SPLIT_US = 8000          # no code has a space this long inside one frame (NEC max 4500)
+MIN_FRAME_US = 6000      # shorter fragments are noise (an NEC repeat frame is ~12 ms)
+NOISE_PULSE_US = 1000    # noise in front of a leader only has pulses shorter than this
 
 def _merge(seq, short):
     """Fold each interior element for which short(v) is true, together with the
@@ -71,6 +76,25 @@ def _repair_leader(out):
     return out
 
 
+def clean_frames(frame):
+    """Split a captured frame at long spaces and clean each part. Returns the
+    parts that look like IR codes."""
+    parts, cur = [], []
+    for v in frame:
+        if v <= -SPLIT_US:
+            parts.append(cur)
+            cur = []
+        else:
+            cur.append(v)
+    parts.append(cur)
+    out = []
+    for p in parts:
+        c = clean(p)
+        if len(c) >= 3 and sum(abs(v) for v in c) >= MIN_FRAME_US:
+            out.append(c)
+    return out
+
+
 def clean(frame):
     """Repair receiver dropouts and strip noise in front of a code."""
     out = []
@@ -84,7 +108,7 @@ def clean(frame):
     out = _repair_leader(out)
     for i in range(0, len(out) - 1, 2):
         if out[i] >= LEADER_PULSE_US and out[i + 1] <= -LEADER_SPACE_US:
-            if i > 0 and all(abs(x) < LEADER_PULSE_US for x in out[:i]):
+            if i > 0 and all(x < NOISE_PULSE_US for x in out[:i:2]):
                 out = out[i:]
             break
     while out and out[-1] < 0:
@@ -123,13 +147,18 @@ class FrameBuilder:
     def flush(self):
         # 3 is the shortest useful frame: an NEC repeat ("ditto") while a
         # button is held is pulse 9000, space 2250, pulse 560.
-        frame = clean(self.frame) if CLEAN_SIGNALS else list(self.frame)
-        if len(frame) >= 3:
-            with lock:
-                queue.append(frame)
-                signal_ready.notify_all()
-            self.got_data = True
+        raw = list(self.frame)
         self.frame.clear()
+        if len(raw) < 3:
+            return
+        frames = clean_frames(raw) if CLEAN_SIGNALS else [raw]
+        with lock:
+            recent.append({"time": round(time.time(), 3), "raw": raw, "sent": frames})
+            if frames:
+                queue.extend(frames)
+                signal_ready.notify_all()
+        if frames:
+            self.got_data = True
 
 
 # ---------------------------------------------------------------------------
@@ -354,6 +383,15 @@ class Handler(BaseHTTPRequestHandler):
             self.send_error(401)
             return
         path, _, query = self.path.partition("?")
+        if path == "/recent":
+            with lock:
+                body = json.dumps({"clean_signals": CLEAN_SIGNALS, "frames": list(recent)}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if path != "/signals":
             self.send_error(404)
             return

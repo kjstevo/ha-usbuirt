@@ -1,5 +1,5 @@
 name: USB-UIRT Raw Capture
-version: "0.4.0"
+version: "0.4.1"
 slug: usbuirt_capture
 description: Raw USB-UIRT capture for the native Home Assistant receiver integration
 url: https://github.com/kjstevo/ha-usbuirt
