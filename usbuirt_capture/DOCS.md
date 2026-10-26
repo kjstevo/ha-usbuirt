@@ -9,3 +9,6 @@ Start and inspect logs. Install the separate custom integration following the re
 This app listens on all interfaces using unencrypted HTTP with bearer-token authentication. Restrict TCP 8766 to Home Assistant on a trusted LAN; never expose it to the internet. It does not automatically install the integration or HAIR.
 
 Raw signal framing uses gap_us (default 20000 microseconds) and a 120 ms idle flush; in direct mode a signal is sent about gap_us + 30 ms after the USB-UIRT reports its end. Adjust gap_us for protocols with long internal spaces. Carrier frequency is unspecified. Long presses can produce repeat signals. One polling integration only; endpoint reads drain a 256-signal queue.
+
+
+clean_signals (default on) repairs signals damaged by ambient IR noise or a weak remote: gaps under 350 us inside a pulse and blips under 200 us inside a space are merged away, a leading pulse broken into pieces is rejoined, and noise in front of a code's leader is dropped. These timings do not occur in common IR protocols (NEC, Samsung, Sony, RC5, RC6, JVC, Panasonic, Sharp), so clean codes are unchanged. Turn it off if a remote with unusually short timings stops matching.

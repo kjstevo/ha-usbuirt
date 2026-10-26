@@ -20,6 +20,7 @@ token = cfg["token"]
 if len(token) < 24 or token.startswith("CHANGE_ME"):
     raise SystemExit("Set a unique access token at least 24 characters long before starting")
 GAP_US = cfg["gap_us"]
+CLEAN_SIGNALS = cfg.get("clean_signals", True)
 queue = collections.deque(maxlen=256)
 lock = threading.Lock()
 # Notified whenever a signal is queued, so /signals?wait=N can return at once
@@ -28,6 +29,67 @@ signal_ready = threading.Condition(lock)
 capturing = False
 # True once direct capture has initialised the USB-UIRT at least once.
 direct_started = False
+
+
+# ---------------------------------------------------------------------------
+# Signal cleanup. With ambient IR noise (projectors, some LED lights) or a weak
+# remote, the receiver breaks long pulses into pieces and glues noise blips in
+# front of codes, so they no longer match. These repairs only touch timings
+# no common IR protocol uses, so clean codes pass through unchanged.
+# ---------------------------------------------------------------------------
+SPACE_GLITCH_US = 350    # no common IR protocol has spaces this short (NEC 560, RC6 444)
+PULSE_GLITCH_US = 200    # ...or pulses this short (Sharp 320, NEC 560)
+LEADER_PULSE_US = 2000   # a pulse at least this long...
+LEADER_SPACE_US = 1500   # ...followed by a space at least this long starts a code
+
+def _merge(seq, short):
+    """Fold each interior element for which short(v) is true, together with the
+    element after it, into the element before it."""
+    out = []
+    i = 0
+    while i < len(seq):
+        v = seq[i]
+        if out and i + 1 < len(seq) and short(v):
+            out[-1] += abs(v) * (1 if out[-1] > 0 else -1) + seq[i + 1]
+            i += 2
+            continue
+        out.append(v)
+        i += 1
+    return out
+
+def _repair_leader(out):
+    """Join a leading pulse broken up by dropouts (NEC/Samsung-style leaders):
+    everything before the first long space, if it has only short gaps, a piece
+    of at least 2.5 ms, and a total of 3.5-11 ms, becomes one pulse."""
+    for k in range(1, len(out), 2):
+        if out[k] <= -LEADER_SPACE_US:
+            head = out[:k]
+            if (k > 1 and all(v > -700 for v in head[1::2]) and max(head[0::2]) >= 2500
+                    and 3500 <= sum(abs(v) for v in head) <= 11000):
+                return [sum(abs(v) for v in head)] + out[k:]
+            return out
+    return out
+
+
+def clean(frame):
+    """Repair receiver dropouts and strip noise in front of a code."""
+    out = []
+    for v in frame:  # normalise: alternate signs, frame starts with a pulse
+        if out and (out[-1] > 0) == (v > 0):
+            out[-1] += v
+        elif out or v > 0:
+            out.append(v)
+    out = _merge(out, lambda v: v < 0 and -v < SPACE_GLITCH_US)   # gaps inside pulses
+    out = _merge(out, lambda v: v > 0 and v < PULSE_GLITCH_US)    # blips inside spaces
+    out = _repair_leader(out)
+    for i in range(0, len(out) - 1, 2):
+        if out[i] >= LEADER_PULSE_US and out[i + 1] <= -LEADER_SPACE_US:
+            if i > 0 and all(abs(x) < LEADER_PULSE_US for x in out[:i]):
+                out = out[i:]
+            break
+    while out and out[-1] < 0:
+        out.pop()
+    return out
 
 
 class FrameBuilder:
@@ -61,9 +123,10 @@ class FrameBuilder:
     def flush(self):
         # 3 is the shortest useful frame: an NEC repeat ("ditto") while a
         # button is held is pulse 9000, space 2250, pulse 560.
-        if len(self.frame) >= 3:
+        frame = clean(self.frame) if CLEAN_SIGNALS else list(self.frame)
+        if len(frame) >= 3:
             with lock:
-                queue.append(list(self.frame))
+                queue.append(frame)
                 signal_ready.notify_all()
             self.got_data = True
         self.frame.clear()
